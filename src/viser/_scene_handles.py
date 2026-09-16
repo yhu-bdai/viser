@@ -1248,6 +1248,8 @@ class GaussianSplatHandle(
         if self.buffer.shape[0] == num_gaussians:
             return
 
+        self.sh_coefficients = None  # Old SH no longer matches the resized splats.
+
         # Create new buffer with default values.
         new_buffer = np.zeros((num_gaussians, 8), dtype=np.uint32)
 
@@ -1323,6 +1325,8 @@ class GaussianSplatHandle(
         self._pack_centers(buffer, centers)
         self._pack_covariances(buffer, covariances)
         self._pack_rgba(buffer, rgbs=rgbs, opacities=opacities)
+        if self.buffer.shape[0] != num_gaussians:
+            self.sh_coefficients = None
         self.buffer = buffer
 
     @property

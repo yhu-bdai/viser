@@ -2380,6 +2380,7 @@ class GaussianSplatsProps:
     scale: Union[float, Tuple[float, float, float]]
     """Scale of the Gaussian splats. A single float for uniform scaling or a
     tuple of (x, y, z) for per-axis scaling."""
+    sh_coefficients: Optional[npt.NDArray[np.float32]]
 
 
 @dataclasses.dataclass

@@ -15,6 +15,8 @@ const GaussianSplatMaterial = /* @__PURE__ */ shaderMaterial(
     depthWrite: false,
     transparent: true,
     textureBuffer: null as THREE.DataTexture | null,
+    textureSH: null as THREE.DataTexture | null,
+    shCoefficientCount: 0,
     textureT_camera_groups: null as THREE.DataTexture | null,
     transitionInState: 0.0,
     projectionMatrixCustom: new THREE.Matrix4(),
@@ -23,7 +25,7 @@ const GaussianSplatMaterial = /* @__PURE__ */ shaderMaterial(
     fogFar: 1000.0,
   },
   `precision highp usampler2D; // Most important: ints must be 32-bit.
-  precision mediump float;
+  precision highp float;
 
   // Index from the splat sorter.
   attribute uint sortedIndex;
@@ -31,6 +33,8 @@ const GaussianSplatMaterial = /* @__PURE__ */ shaderMaterial(
   // Buffers for splat data; each Gaussian gets 4 floats and 4 int32s. We just
   // copy quadjr for this.
   uniform usampler2D textureBuffer;
+  uniform sampler2D textureSH;
+  uniform int shCoefficientCount;
 
   // We could also use a uniform to store transforms, but this would be more
   // limiting in terms of the # of groups we can have.
@@ -68,6 +72,42 @@ const GaussianSplatMaterial = /* @__PURE__ */ shaderMaterial(
     return transpose(transform);
   }
 
+
+  vec4 readSH(int coefficient) {
+    int index = int(sortedIndex) * shCoefficientCount + coefficient;
+    ivec2 size = textureSize(textureSH, 0);
+    return texelFetch(textureSH, ivec2(index % size.x, index / size.x), 0);
+  }
+
+  vec3 evaluateSH(vec3 d) {
+    vec4 dc = readSH(0);
+    int count = int(dc.w);
+    vec3 color = vec3(0.5) + 0.28209479177387814 * dc.rgb;
+    float x = d.x, y = d.y, z = d.z;
+    if (count >= 4) {
+      color += -0.4886025119029199 * y * readSH(1).rgb
+               +0.4886025119029199 * z * readSH(2).rgb
+               -0.4886025119029199 * x * readSH(3).rgb;
+    }
+    if (count >= 9) {
+      color += 1.0925484305920792 * x*y * readSH(4).rgb
+               -1.0925484305920792 * y*z * readSH(5).rgb
+               +0.31539156525252005 * (2.0*z*z-x*x-y*y) * readSH(6).rgb
+               -1.0925484305920792 * x*z * readSH(7).rgb
+               +0.5462742152960396 * (x*x-y*y) * readSH(8).rgb;
+    }
+    if (count >= 16) {
+      color += -0.5900435899266435 * y*(3.0*x*x-y*y) * readSH(9).rgb
+               +2.890611442640554 * x*y*z * readSH(10).rgb
+               -0.4570457994644658 * y*(4.0*z*z-x*x-y*y) * readSH(11).rgb
+               +0.3731763325901154 * z*(2.0*z*z-3.0*x*x-3.0*y*y) * readSH(12).rgb
+               -0.4570457994644658 * x*(4.0*z*z-x*x-y*y) * readSH(13).rgb
+               +1.445305721320277 * z*(x*x-y*y) * readSH(14).rgb
+               -0.5900435899266435 * x*(x*x-3.0*y*y) * readSH(15).rgb;
+    }
+    return max(color, vec3(0.0));
+  }
+
   void main () {
     // Get position + scale from float buffer.
     ivec2 texSize = textureSize(textureBuffer, 0);
@@ -88,9 +128,6 @@ const GaussianSplatMaterial = /* @__PURE__ */ shaderMaterial(
     if (-c_cam.z < near || -c_cam.z > far)
       return;
     vec4 pos2d = projectionMatrixCustom * c_cam;
-    float clip = 1.1 * pos2d.w;
-    if (pos2d.x < -clip || pos2d.x > clip || pos2d.y < -clip || pos2d.y > clip)
-      return;
 
     // Read covariance terms.
     ivec2 texPos1 = ivec2((texStart + 1u) % uint(texSize.x), (texStart + 1u) / uint(texSize.x));
@@ -134,12 +171,22 @@ const GaussianSplatMaterial = /* @__PURE__ */ shaderMaterial(
     float mid = 0.5 * (diag1 + diag2);
     float radius = length(vec2((diag1 - diag2) / 2.0, offDiag));
     float lambda1 = mid + radius;
-    float lambda2 = mid - radius;
-    if (lambda2 < 0.0)
+    float lambda2 = max(mid - radius, 0.1);
+    if (diag1 * diag2 - offDiag * offDiag <= 0.0)
       return;
-    vec2 diagonalVector = normalize(vec2(offDiag, lambda1 - diag1));
-    vec2 v1 = min(sqrt(2.0 * lambda1), 1024.0) * diagonalVector;
-    vec2 v2 = min(sqrt(2.0 * lambda2), 1024.0) * vec2(diagonalVector.y, -diagonalVector.x);
+    vec2 eigenVector = vec2(offDiag, lambda1 - diag1);
+    float eigenLength = length(eigenVector);
+    vec2 diagonalVector = eigenLength > 1e-9 ? eigenVector / eigenLength : vec2(1.0, 0.0);
+    float majorRadius = sqrt(2.0 * lambda1);
+    float maxRadius = min(1024.0, min(viewport.x, viewport.y));
+    float radiusScale = min(1.0, maxRadius / (2.0 * majorRadius));
+    vec2 v1 = majorRadius * radiusScale * diagonalVector;
+    vec2 v2 = sqrt(2.0 * lambda2) * radiusScale * vec2(diagonalVector.y, -diagonalVector.x);
+
+    // Cull the footprint, not just its center.
+    vec2 extent = 2.0 * (abs(v1) + abs(v2));
+    if (any(greaterThan(abs(pos2d.xy / pos2d.w) - 2.0 * extent / viewport, vec2(1.0))))
+      return;
 
     vRgba = vec4(
       float(rgbaUint32 & uint(0xFF)) / 255.0,
@@ -148,10 +195,12 @@ const GaussianSplatMaterial = /* @__PURE__ */ shaderMaterial(
       float(rgbaUint32 >> uint(24)) / 255.0
     );
 
-    // Throw the Gaussian off the screen if it's too close, too far, or too small.
-    float weightedDeterminant = vRgba.a * (diag1 * diag2 - offDiag * offDiag);
-    if (weightedDeterminant < 0.25)
-      return;
+    if (shCoefficientCount > 0 && readSH(0).w > 0.0) {
+      // Camera-to-center direction in the splat's local SH frame.
+      vec3 direction = normalize(inverse(mat3(T_camera_group)) * c_cam.xyz);
+      vRgba.rgb = evaluateSH(direction);
+    }
+
     vPosition = position.xy;
 
     gl_Position = vec4(
@@ -177,8 +226,10 @@ const GaussianSplatMaterial = /* @__PURE__ */ shaderMaterial(
   void main () {
     float A = -dot(vPosition, vPosition);
     if (A < -4.0) discard;
-    float B = exp(A) * vRgba.a;
-    if (B < 0.01) discard;  // alphaTest.
+    // Match SuperSplat's continuous, zero-at-boundary opacity kernel.
+    const float edgeOpacity = 0.01831563888873418;  // exp(-4)
+    float B = max(0.0, (exp(A) - edgeOpacity) / (1.0 - edgeOpacity)) * vRgba.a;
+    if (B <= 0.0) discard;
     gl_FragColor = vec4(vRgba.rgb, B);
     #include <fog_fragment>
   }`,
@@ -204,8 +255,8 @@ export function createGaussianMeshProps(
   geometry.setAttribute(
     "position",
     new THREE.BufferAttribute(
-      new Float32Array([-2, -2, 2, -2, 2, 2, -2, 2]),
-      2,
+      new Float32Array([-2, -2, 0, 2, -2, 0, 2, 2, 0, -2, 2, 0]),
+      3,
     ),
   );
 
@@ -275,6 +326,7 @@ export function useGaussianMeshProps(
 /**Global splat state.*/
 interface SplatState {
   groupBufferFromId: { [id: string]: Uint32Array };
+  groupSHFromId: { [id: string]: Float32Array | null };
   nodeRefFromId: React.MutableRefObject<{
     [name: string]: undefined | Object3D;
   }>;
@@ -284,7 +336,7 @@ interface SplatState {
 }
 
 interface SplatActions {
-  setBuffer: (id: string, buffer: Uint32Array) => void;
+  setBuffer: (id: string, buffer: Uint32Array, sh: Float32Array | null) => void;
   removeBuffer: (id: string) => void;
 }
 
@@ -297,20 +349,24 @@ export function useGaussianSplatStore() {
   return React.useState(() => {
     const store = createStore<SplatState>({
       groupBufferFromId: {},
+      groupSHFromId: {},
       nodeRefFromId: nodeRefFromId,
       sceneNodeNameFromId: sceneNodeNameFromId,
     });
 
     const actions: SplatActions = {
-      setBuffer: (id, buffer) => {
+      setBuffer: (id, buffer, sh) => {
         store.set((state) => ({
           groupBufferFromId: { ...state.groupBufferFromId, [id]: buffer },
+          groupSHFromId: { ...state.groupSHFromId, [id]: sh },
         }));
       },
       removeBuffer: (id) => {
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { [id]: _, ...buffers } = store.get().groupBufferFromId;
-        store.set({ groupBufferFromId: buffers });
+        const { [id]: removedSH, ...sh } = store.get().groupSHFromId;
+        void removedSH;
+        store.set({ groupBufferFromId: buffers, groupSHFromId: sh });
       },
     };
 

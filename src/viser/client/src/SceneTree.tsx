@@ -647,6 +647,12 @@ function createObjectFactory(
           <group ref={ref}>
             <group scale={normalizeScale(message.props.scale)}>
               <SplatObject
+                shCoefficients={message.props.sh_coefficients == null ? null : new Float32Array(
+                  message.props.sh_coefficients.buffer.slice(
+                    message.props.sh_coefficients.byteOffset,
+                    message.props.sh_coefficients.byteOffset + message.props.sh_coefficients.byteLength,
+                  ),
+                )}
                 buffer={message.props.buffer}
                 sceneNodeName={message.name}
               />

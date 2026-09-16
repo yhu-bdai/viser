@@ -71,10 +71,11 @@ export const SplatObject = React.forwardRef<
   THREE.Group,
   {
     buffer: Uint32Array;
+    shCoefficients?: Float32Array | null;
     sceneNodeName?: string;
     children?: React.ReactNode;
   }
->(function SplatObject({ buffer, sceneNodeName, children }, ref) {
+>(function SplatObject({ buffer, shCoefficients = null, sceneNodeName, children }, ref) {
   const splatContext = React.useContext(GaussianSplatsContext)!;
   const { setBuffer, removeBuffer } = splatContext.gaussianSplatState.actions;
   const nodeRefFromId = splatContext.gaussianSplatState.store(
@@ -97,8 +98,8 @@ export const SplatObject = React.forwardRef<
 
   // Update buffer when it changes.
   React.useEffect(() => {
-    setBuffer(name, buffer);
-  }, [name, buffer, setBuffer]);
+    setBuffer(name, buffer, shCoefficients);
+  }, [name, buffer, shCoefficients, setBuffer]);
 
   return (
     <group
@@ -141,6 +142,7 @@ function SplatRenderer() {
 function SplatRendererImpl() {
   const splatContext = React.useContext(GaussianSplatsContext)!;
   const viewer = React.useContext(ViewerContext)!;
+  const groupSHFromId = splatContext.gaussianSplatState.store((state) => state.groupSHFromId);
   const groupBufferFromId = splatContext.gaussianSplatState.store(
     (state) => state.groupBufferFromId,
   );
@@ -314,6 +316,48 @@ function SplatRendererImpl() {
 
     prevMergedRef.current = merged;
   }
+
+  // SH shares the same Gaussian order as the global sorter.
+  const shMaterial = meshPropsRef.current?.material;
+  React.useEffect(() => {
+    if (!shMaterial) return;
+    const entries = Object.entries(groupBufferFromId);
+    const count = Math.max(0, ...entries.map(([id, buffer]) =>
+      buffer.length > 0 ? (groupSHFromId[id]?.length ?? 0) / (buffer.length / 8) / 3 : 0));
+    shMaterial.uniforms.shCoefficientCount.value = count;
+    if (count === 0) return;
+    const total = entries.reduce((sum, [, buffer]) => sum + buffer.length / 8, 0);
+    const width = Math.min(maxTextureSize, total * count);
+    const height = Math.ceil(total * count / width);
+    if (height > maxTextureSize) throw new Error("SH texture exceeds GPU capacity");
+    const data = new Uint16Array(width * height * 4);
+    let offset = 0;
+    for (const [id, buffer] of entries) {
+      const n = buffer.length / 8;
+      const sh = groupSHFromId[id];
+      const k = sh ? sh.length / n / 3 : 0;
+      if (sh) {
+        for (let i = 0; i < n; i++) {
+          data[(offset + i) * count * 4 + 3] = THREE.DataUtils.toHalfFloat(k);
+          for (let j = 0; j < k; j++) {
+            const dst = ((offset + i) * count + j) * 4;
+            for (let c = 0; c < 3; c++)
+              data[dst + c] = THREE.DataUtils.toHalfFloat(sh[(i * k + j) * 3 + c]);
+          }
+        }
+      }
+      offset += n;
+    }
+    const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.HalfFloatType);
+    texture.needsUpdate = true;
+    shMaterial.uniforms.textureSH.value = texture;
+    viewer.mutable.current.requestRender();
+    return () => {
+      texture.dispose();
+      shMaterial.uniforms.textureSH.value = null;
+      shMaterial.uniforms.shCoefficientCount.value = 0;
+    };
+  }, [groupBufferFromId, groupSHFromId, shMaterial, maxTextureSize, viewer]);
 
   // Keep context meshPropsRef in sync.
   splatContext.meshPropsRef.current = meshPropsRef.current;

@@ -2684,6 +2684,7 @@ class SceneApi:
         rgbs: np.ndarray,
         opacities: np.ndarray,
         *,
+        sh_coefficients: np.ndarray | None = None,
         scale: float | tuple[float, float, float] = 1.0,
         wxyz: Tuple[float, float, float, float] | np.ndarray = (1.0, 0.0, 0.0, 0.0),
         position: Tuple[float, float, float] | np.ndarray = (0.0, 0.0, 0.0),
@@ -2700,6 +2701,7 @@ class SceneApi:
             covariances: Second moment for each Gaussian. (N, 3, 3).
             rgbs: Color for each Gaussian. (N, 3).
             opacities: Opacity for each Gaussian. (N, 1).
+            sh_coefficients: SH coefficients including DC, shape (N, K, 3).
             scale: Scale of the Gaussian splats. A single float for uniform
                 scaling or a tuple of (x, y, z) for per-axis scaling.
             wxyz: R_parent_local transformation.
@@ -2714,6 +2716,14 @@ class SceneApi:
         assert rgbs.shape == (num_gaussians, 3)
         assert opacities.shape == (num_gaussians, 1)
         assert covariances.shape == (num_gaussians, 3, 3)
+
+        if sh_coefficients is not None:
+            sh_coefficients = np.asarray(sh_coefficients, dtype=np.float32)
+            if (sh_coefficients.ndim != 3 or sh_coefficients.shape[0] != num_gaussians
+                    or sh_coefficients.shape[1] not in (1, 4, 9, 16)
+                    or sh_coefficients.shape[2] != 3):
+                raise ValueError("sh_coefficients must have shape (N, K, 3), K=1,4,9,16")
+            sh_coefficients = np.ascontiguousarray(sh_coefficients)
 
         # Get upper-triangular terms of covariance matrix.
         cov_triu = covariances.reshape((-1, 9))[:, np.array([0, 1, 2, 4, 5, 8])]
@@ -2741,6 +2751,7 @@ class SceneApi:
             name=name,
             props=_messages.GaussianSplatsProps(
                 buffer=buffer,
+                sh_coefficients=sh_coefficients,
                 scale=scale,
             ),
         )

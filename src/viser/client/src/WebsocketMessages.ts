@@ -560,7 +560,11 @@ export interface GaussianSplatsMessage {
   name: string;
   owner: string;
   virtual: boolean;
-  props: { buffer: Uint32Array; scale: number | [number, number, number] };
+  props: {
+    buffer: Uint32Array;
+    scale: number | [number, number, number];
+    sh_coefficients: Float32Array | null;
+  };
 }
 /** Remove a particular node's variant, for the scope stamped in
  * ``owner``, from the scene. Removal is scope-local: it never touches the
@@ -3362,6 +3366,10 @@ export const SceneNodePropsSchema: {
     scale: {
       kind: "default",
       tsType: "(number | [number, number, number])",
+    },
+    sh_coefficients: {
+      kind: "default",
+      tsType: "(Float32Array | null)",
     },
   },
 };
